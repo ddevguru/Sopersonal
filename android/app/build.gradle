@@ -1,0 +1,55 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace 'com.devloperwala.play_smart' // Updated to match your applicationId
+    compileSdk 35
+    ndkVersion flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    defaultConfig {
+        applicationId "com.devloperwala.play_smart"
+        minSdkVersion flutter.minSdkVersion // Compatible with upi_india
+        targetSdk flutter.targetSdkVersion
+        versionCode 13
+        versionName flutter.versionName
+    }
+
+   
+ signingConfigs {
+        release {
+            keyAlias 'my-key-alias'
+            keyPassword '123456'
+            storeFile file('C:/Users/deepa/my-release-key.jks')
+            storePassword '123456'
+        }
+    }
+    buildTypes {
+        release {
+             minifyEnabled false
+            shrinkResources false
+             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+           
+            signingConfig = signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    // No external dependencies needed for upi_india
+}
+
+flutter {
+    source '../..'
+}
