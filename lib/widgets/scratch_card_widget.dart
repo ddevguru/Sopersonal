@@ -40,20 +40,26 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
   }
 
   Future<void> _loadScratchAmount() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
     });
     try {
       final amount = await widget.fetchScratchAmount();
-      setState(() {
-        _scratchAmount = amount;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _scratchAmount = amount;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
       print('Error loading scratch amount: $e');
+      // Don't throw, just log the error so the widget can still render
     }
   }
 
@@ -79,6 +85,11 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
       final centerY = size.height / 2;
       final radius = 60.0; // Circular scratch area radius
       
+      // Make sure _scratchAmount is set before checking scratched percentage
+      if (_scratchAmount == null) {
+        _loadScratchAmount();
+      }
+      
       // Count points within circular area
       int pointsInCircle = 0;
       for (final point in _scratchedPoints) {
@@ -94,8 +105,20 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
       
       // If more than 40% of circle is scratched, reveal the card
       if (_scratchedPercentage >= 40.0 && !_isScratched) {
-        _isScratched = true;
-        if (_scratchAmount != null) {
+        // Ensure amount is loaded before marking as scratched
+        if (_scratchAmount == null) {
+          _loadScratchAmount().then((_) {
+            if (mounted && _scratchAmount != null) {
+              setState(() {
+                _isScratched = true;
+              });
+              widget.onScratched(_scratchAmount!);
+            }
+          });
+        } else {
+          setState(() {
+            _isScratched = true;
+          });
           widget.onScratched(_scratchAmount!);
         }
       }
@@ -127,87 +150,68 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
         ),
         child: Padding(
           padding: EdgeInsets.all(16),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.lock_outline,
-                color: Colors.white,
-                size: 40,
-              ),
-              SizedBox(height: 10),
-              Text(
-                'Already Scratched Today',
-                style: GoogleFonts.poppins(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.lock_outline,
                   color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+                  size: 40,
                 ),
-              ),
-              SizedBox(height: 5),
-              Text(
-                'Come back tomorrow!',
-                style: GoogleFonts.poppins(
-                  color: Colors.white.withOpacity(0.8),
-                  fontSize: 12,
+                SizedBox(height: 8),
+                Text(
+                  'Already Scratched Today',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
                 ),
-              ),
-              SizedBox(height: 15),
-              // Weekly Progress
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(10),
+                SizedBox(height: 4),
+                Text(
+                  'Come back tomorrow!',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white.withOpacity(0.8),
+                    fontSize: 12,
+                  ),
+                  textAlign: TextAlign.center,
                 ),
-                child: Column(
-                  children: [
-                    Text(
-                      'Week Progress',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                SizedBox(height: 10),
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Week Progress: $totalScratched/7 Days',
+                        style: GoogleFonts.poppins(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
-                    ),
-                    SizedBox(height: 5),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(7, (index) {
-                        final day = index + 1;
-                        final scratchedDays = List<int>.from(widget.weeklyProgress['scratched_days'] ?? []);
-                        final isScratched = scratchedDays.contains(day);
-                        return Container(
-                          margin: EdgeInsets.symmetric(horizontal: 2),
-                          width: 20,
-                          height: 20,
-                          decoration: BoxDecoration(
-                            color: isScratched ? Colors.white : Colors.white.withOpacity(0.3),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: Colors.white,
-                              width: 1,
-                            ),
-                          ),
-                          child: isScratched
-                              ? Icon(Icons.check, size: 12, color: Color(0xFFFFD700))
-                              : null,
-                        );
-                      }),
-                    ),
-                    SizedBox(height: 5),
-                    Text(
-                      '$totalScratched/7 Days',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
+                      SizedBox(height: 4),
+                      Text(
+                        'Next: Day ${widget.weeklyProgress['current_streak_day'] ?? 1} - ₹${((widget.weeklyProgress['current_streak_day'] ?? 1) * 5).toStringAsFixed(0)}',
+                        style: GoogleFonts.poppins(
+                          color: Colors.white.withOpacity(0.9),
+                          fontSize: 11,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       );
@@ -239,8 +243,8 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              Color(0xFFFFD700), // Gold
-              Color(0xFFFFA500), // Orange Gold
+              Color(0xFF4CAF50), // Green
+              Color(0xFF66BB6A), // Light Green
             ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -248,46 +252,52 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.amber.withOpacity(0.5),
+              color: Colors.green.withOpacity(0.5),
               blurRadius: 15,
               spreadRadius: 2,
             ),
           ],
         ),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.check_circle,
-                color: Colors.white,
-                size: 50,
-              ),
-              SizedBox(height: 10),
-              Text(
-                '₹${_scratchAmount?.toStringAsFixed(2) ?? '0.00'}',
-                style: GoogleFonts.poppins(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.check_circle,
                   color: Colors.white,
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black.withOpacity(0.3),
-                      offset: Offset(2, 2),
-                      blurRadius: 4,
-                    ),
-                  ],
+                  size: 50,
                 ),
-              ),
-              SizedBox(height: 5),
-              Text(
-                'Added to Wallet!',
-                style: GoogleFonts.poppins(
-                  color: Colors.white.withOpacity(0.9),
-                  fontSize: 14,
+                SizedBox(height: 8),
+                Text(
+                  '₹${_scratchAmount?.toStringAsFixed(2) ?? '0.00'}',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black.withOpacity(0.3),
+                        offset: Offset(2, 2),
+                        blurRadius: 4,
+                      ),
+                    ],
+                  ),
+                  textAlign: TextAlign.center,
                 ),
-              ),
-            ],
+                SizedBox(height: 4),
+                Text(
+                  'Added to Wallet!',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -341,12 +351,13 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
                   child: Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           '₹',
                           style: GoogleFonts.poppins(
                             color: Color(0xFFFFD700),
-                            fontSize: 24,
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -354,7 +365,7 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
                           _scratchAmount?.toStringAsFixed(0) ?? '0',
                           style: GoogleFonts.poppins(
                             color: Color(0xFFFFD700),
-                            fontSize: 48,
+                            fontSize: 40,
                             fontWeight: FontWeight.bold,
                             shadows: [
                               Shadow(
@@ -372,24 +383,38 @@ class _ScratchCardWidgetState extends State<ScratchCardWidget> {
               ),
               // Weekly Progress Indicator (top right)
               Positioned(
-                top: 10,
-                right: 10,
+                top: 15,
+                right: 15,
                 child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(15),
                   ),
-                  child: Row(
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.calendar_today, size: 14, color: Colors.white),
-                      SizedBox(width: 5),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.calendar_today, size: 14, color: Colors.white),
+                          SizedBox(width: 5),
+                          Text(
+                            'Day ${widget.weeklyProgress['current_streak_day'] ?? 1}',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: 2),
                       Text(
-                        '${widget.weeklyProgress['total_scratched'] ?? 0}/7',
+                        '₹${((widget.weeklyProgress['current_streak_day'] ?? 1) * 5).toStringAsFixed(0)}',
                         style: GoogleFonts.poppins(
                           color: Colors.white,
-                          fontSize: 12,
+                          fontSize: 10,
                           fontWeight: FontWeight.bold,
                         ),
                       ),

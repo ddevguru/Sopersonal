@@ -11,6 +11,8 @@ import 'package:play_smart/controller/mini-contest-controller.dart';
 import 'package:play_smart/profile_Screen.dart';
 import 'package:play_smart/splash_screen.dart';
 import 'package:play_smart/widgets/scratch_card_widget.dart';
+import 'package:play_smart/daily_speen_wheel.dart';
+import 'package:play_smart/weekly_spin_wheel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'quiz_screen.dart';
@@ -56,6 +58,26 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     'total_amount': 0.0,
     'current_day': 1,
   }; // Weekly scratch card progress
+  
+  // Spin wheel state
+  bool _canSpinToday = true; // Whether user can spin today
+  Map<String, dynamic> _spinWheelProgress = {
+    'spun_days': [],
+    'total_spun': 0,
+    'total_amount': 0.0,
+    'current_day': 1,
+    'current_streak_day': 1,
+  }; // Weekly spin wheel progress
+  
+  // Weekly spin wheel state
+  Map<String, dynamic> _weeklySpinWheelEligibility = {
+    'matches_played': 0,
+    'matches_remaining': 7,
+    'is_eligible': false,
+    'has_spun': false,
+    'can_spin': false,
+    'days_remaining': 0,
+  };
 
   @override
   void initState() {
@@ -63,9 +85,12 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     _initializeAnimations();
     fetchUserBalance();
     fetchContests();
+    fetchSpinWheelInfo();
+    fetchWeeklySpinWheelEligibility();
     _startRefreshTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showMiniContestPopup();
+      _checkAndShowWeeklySpinWheel();
     });
   }
 
@@ -364,9 +389,16 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     }
     try {
       await updateLastActivity();
+      // Standalone scratch card - no contest_id or contest_type needed
       final response = await http.get(
-        Uri.parse('https://sopersonal.in/fetch_scratch_card_amount.php?session_token=$token&contest_id=$contestId&contest_type=$contestType'),
+        Uri.parse('https://sopersonal.in/fetch_scratch_card_amount.php?session_token=$token'),
       ).timeout(Duration(seconds: 10));
+      
+      if (response.statusCode != 200) {
+        print('Scratch card API error: Status ${response.statusCode}, Body: ${response.body}');
+        throw Exception('HTTP ${response.statusCode}: ${response.body}');
+      }
+      
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success']) {
@@ -384,6 +416,8 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                   ? weeklyProgress['total_amount']
                   : double.parse((weeklyProgress['total_amount'] ?? 0).toString()),
               'current_day': weeklyProgress['current_day'] ?? 1,
+              'current_streak_day': weeklyProgress['current_streak_day'] ?? 1,
+              'has_missed_day': weeklyProgress['has_missed_day'] ?? false,
               'week_start_date': weeklyProgress['week_start_date'] ?? '',
             };
           });
@@ -405,7 +439,8 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   }
 
   Future<double> fetchScratchCardAmount(int contestId, String contestType) async {
-    final info = await fetchScratchCardInfo(contestId, contestType);
+    // Standalone scratch card - contestId and contestType are not used
+    final info = await fetchScratchCardInfo(0, 'standalone');
     return info['amount'] as double;
   }
 
@@ -417,13 +452,12 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     }
     try {
       await updateLastActivity();
+      // Standalone scratch card - no contest_id or contest_type needed
       final response = await http.post(
         Uri.parse('https://sopersonal.in/update_wallet_from_scratch_card.php'),
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'session_token': token,
-          'contest_id': contestId.toString(),
-          'contest_type': contestType,
           'amount': amount.toString(),
         },
       ).timeout(Duration(seconds: 10));
@@ -442,6 +476,8 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                   ? weeklyProgress['total_amount']
                   : double.parse((weeklyProgress['total_amount'] ?? 0).toString()),
               'current_day': weeklyProgress['current_day'] ?? 1,
+              'current_streak_day': weeklyProgress['current_streak_day'] ?? 1,
+              'has_missed_day': weeklyProgress['has_missed_day'] ?? false,
               'week_start_date': weeklyProgress['week_start_date'] ?? '',
             };
           });
@@ -460,7 +496,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                       children: [
                         Text('₹${amount.toStringAsFixed(2)} added to your wallet!'),
                         Text(
-                          'Week Progress: ${weeklyProgress['total_scratched'] ?? 0}/7 days',
+                          'Day ${weeklyProgress['current_streak_day'] ?? 1} Complete! Next: Day ${((weeklyProgress['current_streak_day'] ?? 1) + 1)} - ₹${(((weeklyProgress['current_streak_day'] ?? 1) + 1) * 5).toStringAsFixed(0)}',
                           style: TextStyle(fontSize: 12),
                         ),
                       ],
@@ -839,6 +875,9 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
           };
         }
       });
+      
+      // Record contest play for weekly spin wheel eligibility
+      recordContestPlay(contest.id, contest.type);
       
       if (contest.type == 'mega') {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1385,45 +1424,60 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                   ),
                   SizedBox(height: 30),
                   Expanded(
-                    child: ListView(
-                      physics: BouncingScrollPhysics(),
+                    child: Stack(
                       children: [
-                        if (megaContests.isNotEmpty) ...[
-                          _buildSectionTitle('Bg Win Contests'),
-                          SizedBox(height: 10),
-                          ...megaContests.asMap().entries.map((entry) {
-                            final index = entry.key;
-                            final contest = entry.value;
-                            return _buildContestCard(contest, index, isMega: true);
-                          }),
-                        ],
-                        if (sortedMiniContests.isNotEmpty) ...[
-                          SizedBox(height: 20),
-                          _buildSectionTitle('Mini Contests'),
-                          SizedBox(height: 10),
-                          ...sortedMiniContests.asMap().entries.map((entry) {
-                            final index = entry.key;
-                            final contest = entry.value;
-                            return _buildContestCard(contest, index, isMega: false);
-                          }),
-                        ],
-                        if (megaContests.isEmpty && sortedMiniContests.isEmpty)
-                          Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                CircularProgressIndicator(color: Color(0xFFCE93D8)),
-                                SizedBox(height: 20),
-                                Text(
-                                  'Loading Contests...',
-                                  style: GoogleFonts.poppins(
-                                    color: Color(0xFFD1C4E9),
-                                    fontSize: 16,
-                                  ),
+                        ListView(
+                          physics: BouncingScrollPhysics(),
+                          children: [
+                            // Scratch Card Section
+                            _buildSectionTitle('Scratch Card'),
+                            SizedBox(height: 10),
+                            _buildScratchCardSection(),
+                            SizedBox(height: 20),
+                            if (megaContests.isNotEmpty) ...[
+                              _buildSectionTitle('Bg Win Contests'),
+                              SizedBox(height: 10),
+                              ...megaContests.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final contest = entry.value;
+                                return _buildContestCard(contest, index, isMega: true);
+                              }),
+                            ],
+                            if (sortedMiniContests.isNotEmpty) ...[
+                              SizedBox(height: 20),
+                              _buildSectionTitle('Mini Contests'),
+                              SizedBox(height: 10),
+                              ...sortedMiniContests.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final contest = entry.value;
+                                return _buildContestCard(contest, index, isMega: false);
+                              }),
+                            ],
+                            if (megaContests.isEmpty && sortedMiniContests.isEmpty)
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    CircularProgressIndicator(color: Color(0xFFCE93D8)),
+                                    SizedBox(height: 20),
+                                    Text(
+                                      'Loading Contests...',
+                                      style: GoogleFonts.poppins(
+                                        color: Color(0xFFD1C4E9),
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                          ),
+                              ),
+                          ],
+                        ),
+                        // Spin Wheel Overlay Button (Left Corner)
+                        Positioned(
+                          left: 10,
+                          bottom: 20,
+                          child: _buildSpinWheelOverlay(),
+                        ),
                       ],
                     ),
                   ),
@@ -1563,89 +1617,72 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       opacity: _fadeAnimation,
       child: SlideTransition(
         position: _slideAnimation,
-        child: GestureDetector(
-          onTap: buttonEnabled
-              ? () {
-                  if (isMega) {
-                    final hasStatusData = _megaContestStatus.containsKey(contest.id);
-                    
-                    if (!hasStatusData) {
-                      if (minutesUntilStart > 1 && minutesUntilStart <= 30) {
-                        _showRankingsPopup(contest);
-                      } else if (minutesUntilStart <= 0 && minutesUntilStart > -120) {
-                        startMegaContest(contest);
+        child: Stack(
+          children: [
+            // Contest Card (Original Design)
+            GestureDetector(
+              onTap: buttonEnabled
+                  ? () {
+                      if (isMega) {
+                        final hasStatusData = _megaContestStatus.containsKey(contest.id);
+                        
+                        if (!hasStatusData) {
+                          if (minutesUntilStart > 1 && minutesUntilStart <= 30) {
+                            _showRankingsPopup(contest);
+                          } else if (minutesUntilStart <= 0 && minutesUntilStart > -120) {
+                            startMegaContest(contest);
+                          }
+                        } else if (canViewResultsMega || (hasSubmitted && hasViewedResults)) {
+                          viewMegaResults(contest);
+                        } else if (canStartMega) {
+                          startMegaContest(contest);
+                        } else if (canJoinMega) {
+                          _showRankingsPopup(contest);
+                        }
+                      } else {
+                        joinContest(contest);
                       }
-                    } else if (canViewResultsMega || (hasSubmitted && hasViewedResults)) {
-                      viewMegaResults(contest);
-                    } else if (canStartMega) {
-                      startMegaContest(contest);
-                    } else if (canJoinMega) {
-                      _showRankingsPopup(contest);
                     }
-                  } else {
-                    joinContest(contest);
-                  }
-                }
-              : null,
-          child: Container(
-            margin: EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: gradient,
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 10,
-                  offset: Offset(0, 5),
-                ),
-              ],
-            ),
-            child: Stack(
-              children: [
-                Positioned(
-                  top: -20,
-                  right: -20,
-                  child: Opacity(
-                    opacity: 0.2,
-                    child: Icon(
-                      Icons.star,
-                      size: 100,
-                      color: Color(0xFFD1C4E9),
-                    ),
+                  : null,
+              child: Container(
+                margin: EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: gradient,
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 10,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
                 ),
-                // Scratch Card Overlay
-                if (!(_scratchCardScratched[contest.id] ?? false))
-                  Positioned.fill(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: IgnorePointer(
-                        ignoring: _scratchCardScratched[contest.id] ?? false,
-                        child: ScratchCardWidget(
-                          contestId: contest.id,
-                          contestType: contest.type,
-                          canScratchToday: _canScratchToday && !_scratchCardScratched.values.any((scratched) => scratched),
-                          weeklyProgress: _weeklyProgress,
-                          fetchScratchAmount: () => fetchScratchCardAmount(contest.id, contest.type),
-                          onScratched: (amount) {
-                            updateWalletFromScratchCard(contest.id, contest.type, amount);
-                          },
+                child: Stack(
+                  children: [
+                    Positioned(
+                      top: -20,
+                      right: -20,
+                      child: Opacity(
+                        opacity: 0.2,
+                        child: Icon(
+                          Icons.star,
+                          size: 100,
+                          color: Color(0xFFD1C4E9),
                         ),
                       ),
                     ),
-                  ),
-                Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
                           Container(
                             padding: EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                             decoration: BoxDecoration(
@@ -1696,29 +1733,29 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                           ),
                         ],
                       ),
-                      SizedBox(height: 10),
-                      Text(
-                        contest.name,
-                        style: GoogleFonts.poppins(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          shadows: [
-                            Shadow(
-                              color: Colors.black.withOpacity(0.3),
-                              offset: Offset(0, 2),
-                              blurRadius: 4,
-                            ),
-                          ],
+                        SizedBox(height: 10),
+                        Text(
+                          contest.name,
+                          style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withOpacity(0.3),
+                                offset: Offset(0, 2),
+                                blurRadius: 4,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      SizedBox(height: 10),
-                      if (isMega) ...[
-                        _buildContestDetail(
-                          icon: Icons.schedule,
-                          text: 'Start: ${startDateTime.toLocal().toString().split('.')[0]}',
-                        ),
-                        _buildContestDetail(
+                        SizedBox(height: 10),
+                        if (isMega) ...[
+                          _buildContestDetail(
+                            icon: Icons.schedule,
+                            text: 'Start: ${startDateTime.toLocal().toString().split('.')[0]}',
+                          ),
+                          _buildContestDetail(
                           icon: Icons.group,
                           text: 'Players: ${contest.numPlayers}',
                         ),
@@ -1730,17 +1767,17 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                           _buildContestDetail(
                             icon: Icons.monetization_on,
                             text: 'Total Winning Amount: ₹${contest.totalWinningAmount!.toStringAsFixed(2)}',
-                          ),
-                      ] else ...[
-                        _buildContestDetail(
-                          icon: Icons.account_balance_wallet,
-                          text: 'Prize Pool: ₹${contest.prizePool.toStringAsFixed(2)}',
-                        ),
-                      ],
-                      SizedBox(height: 15),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: ElevatedButton(
+                            ),
+                          ] else ...[
+                            _buildContestDetail(
+                              icon: Icons.account_balance_wallet,
+                              text: 'Prize Pool: ₹${contest.prizePool.toStringAsFixed(2)}',
+                            ),
+                          ],
+                          SizedBox(height: 15),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: ElevatedButton(
                           onPressed: buttonEnabled
                               ? () {
                                   if (isMega) {
@@ -1771,15 +1808,17 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                               borderRadius: BorderRadius.circular(15),
                             ),
                             elevation: 5,
+                            ),
                           ),
                         ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -1807,6 +1846,330 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildScratchCardSection() {
+    return Container(
+      margin: EdgeInsets.only(bottom: 20),
+      height: 180, // Reduced height to prevent overflow
+      child: ScratchCardWidget(
+        contestId: 0, // Not used for standalone scratch card
+        contestType: 'standalone', // Standalone scratch card
+        canScratchToday: _canScratchToday && !_scratchCardScratched.values.any((scratched) => scratched),
+        weeklyProgress: _weeklyProgress,
+        fetchScratchAmount: () async {
+          // Standalone scratch card - no contest needed
+          return await fetchScratchCardAmount(0, 'standalone');
+        },
+        onScratched: (amount) {
+          // Standalone scratch card - no contest needed
+          updateWalletFromScratchCard(0, 'standalone', amount);
+        },
+      ),
+    );
+  }
+
+  // Spin Wheel Methods
+  Future<Map<String, dynamic>> fetchSpinWheelInfo() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token');
+    if (token == null) {
+      throw Exception('No token found');
+    }
+    try {
+      await updateLastActivity();
+      final response = await http.get(
+        Uri.parse('https://sopersonal.in/fetch_spin_wheel_amount.php?session_token=$token'),
+      ).timeout(Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success']) {
+          final canSpin = data['can_spin_today'] ?? true;
+          final weeklyProgress = data['weekly_progress'] ?? {};
+          setState(() {
+            _canSpinToday = canSpin;
+            _spinWheelProgress = {
+              'spun_days': List<int>.from(weeklyProgress['spun_days'] ?? []),
+              'total_spun': weeklyProgress['total_spun'] ?? 0,
+              'total_amount': weeklyProgress['total_amount'] is double
+                  ? weeklyProgress['total_amount']
+                  : double.parse((weeklyProgress['total_amount'] ?? 0).toString()),
+              'current_day': weeklyProgress['current_day'] ?? 1,
+              'current_streak_day': weeklyProgress['current_streak_day'] ?? 1,
+              'has_missed_day': weeklyProgress['has_missed_day'] ?? false,
+              'week_start_date': weeklyProgress['week_start_date'] ?? '',
+            };
+          });
+          return {
+            'can_spin_today': canSpin,
+            'weekly_progress': weeklyProgress,
+          };
+        }
+      }
+      throw Exception('Failed to fetch spin wheel info');
+    } catch (e) {
+      print('Error fetching spin wheel info: $e');
+      return {
+        'can_spin_today': false,
+        'weekly_progress': {},
+      };
+    }
+  }
+
+  Future<void> updateWalletFromSpinWheel(double amount) async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('token');
+    if (token == null) {
+      throw Exception('No token found');
+    }
+    try {
+      await updateLastActivity();
+      final response = await http.post(
+        Uri.parse('https://sopersonal.in/update_wallet_from_spin_wheel.php'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'session_token': token,
+          'amount': amount.toString(),
+        },
+      ).timeout(Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success']) {
+          final weeklyProgress = data['weekly_progress'] ?? {};
+          setState(() {
+            userBalance += amount;
+            _canSpinToday = false;
+            _spinWheelProgress = {
+              'spun_days': List<int>.from(weeklyProgress['spun_days'] ?? []),
+              'total_spun': weeklyProgress['total_spun'] ?? 0,
+              'total_amount': weeklyProgress['total_amount'] is double
+                  ? weeklyProgress['total_amount']
+                  : double.parse((weeklyProgress['total_amount'] ?? 0).toString()),
+              'current_day': weeklyProgress['current_day'] ?? 1,
+              'current_streak_day': weeklyProgress['current_streak_day'] ?? 1,
+              'has_missed_day': weeklyProgress['has_missed_day'] ?? false,
+              'week_start_date': weeklyProgress['week_start_date'] ?? '',
+            };
+          });
+        }
+      }
+    } catch (e) {
+      print('Error updating wallet from spin wheel: $e');
+      rethrow;
+    }
+  }
+
+  Widget _buildSpinWheelOverlay() {
+    return GestureDetector(
+      onTap: () {
+        _showSpinWheelDialog();
+      },
+      child: Container(
+        width: 70,
+        height: 70,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            colors: [
+              Color(0xFFFFD700), // Gold
+              Color(0xFFFFA500), // Orange Gold
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.amber.withOpacity(0.5),
+              blurRadius: 15,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Icon(
+              Icons.casino,
+              color: Colors.white,
+              size: 35,
+            ),
+            if (!_canSpinToday)
+              Positioned(
+                top: 5,
+                right: 5,
+                child: Container(
+                  width: 20,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.red,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: Icon(
+                    Icons.close,
+                    color: Colors.white,
+                    size: 12,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> fetchWeeklySpinWheelEligibility() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('session_token') ?? prefs.getString('token');
+      if (token == null) return;
+
+      final response = await http.get(
+        Uri.parse('https://sopersonal.in/backend/check_weekly_spin_wheel_eligibility.php?session_token=$token'),
+      ).timeout(Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          setState(() {
+            _weeklySpinWheelEligibility = {
+              'matches_played': data['matches_played'] ?? 0,
+              'matches_remaining': data['matches_remaining'] ?? 7,
+              'is_eligible': data['is_eligible'] ?? false,
+              'has_spun': data['has_spun'] ?? false,
+              'can_spin': data['can_spin'] ?? false,
+              'days_remaining': data['days_remaining'] ?? 0,
+            };
+          });
+        }
+      }
+    } catch (e) {
+      print('Error fetching weekly spin wheel eligibility: $e');
+    }
+  }
+
+  Future<void> recordContestPlay(int contestId, String contestType) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('session_token') ?? prefs.getString('token');
+      if (token == null) return;
+
+      await http.post(
+        Uri.parse('https://sopersonal.in/backend/record_contest_play.php'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'session_token': token,
+          'contest_id': contestId.toString(),
+          'contest_type': contestType,
+        },
+      ).timeout(Duration(seconds: 10));
+
+      // Refresh eligibility after recording
+      await fetchWeeklySpinWheelEligibility();
+    } catch (e) {
+      print('Error recording contest play: $e');
+    }
+  }
+
+  void _checkAndShowWeeklySpinWheel() {
+    // Show popup if eligible and not already spun
+    if (_weeklySpinWheelEligibility['can_spin'] == true) {
+      Future.delayed(Duration(milliseconds: 500), () {
+        if (mounted) {
+          _showWeeklySpinWheelDialog();
+        }
+      });
+    }
+  }
+
+  void _showWeeklySpinWheelDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return WeeklySpinWheelDialog(
+          eligibility: _weeklySpinWheelEligibility,
+          onSpinComplete: (rewardType, rewardValue) {
+            fetchWeeklySpinWheelEligibility();
+            Navigator.of(context).pop();
+          },
+        );
+      },
+    );
+  }
+
+  void _showSpinWheelDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Color(0xFF1E1E1E),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Daily Spin Wheel',
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 20),
+                SpinWheelWidget(
+                  canSpinToday: _canSpinToday,
+                  weeklyProgress: _spinWheelProgress,
+                  onSpinComplete: (amount) {
+                    updateWalletFromSpinWheel(amount);
+                    fetchUserBalance();
+                    fetchSpinWheelInfo();
+                  },
+                ),
+                SizedBox(height: 20),
+                if (!_canSpinToday)
+                  Container(
+                    padding: EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.orange, size: 20),
+                        SizedBox(width: 10),
+                        Text(
+                          'Already spun today! Come back tomorrow.',
+                          style: GoogleFonts.poppins(
+                            color: Colors.orange,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

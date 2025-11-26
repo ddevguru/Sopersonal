@@ -43,27 +43,26 @@ function getWeeklyProgress($userId, $conn) {
     $weekStart = getWeekStartDate();
     $dayNumber = getDayNumber();
     
-    // Get all scratches for this week
-    $stmt = $conn->prepare("SELECT day_number, scratch_date, amount FROM user_scratch_card_history WHERE user_id = ? AND week_start_date = ? ORDER BY day_number");
+    // Get all spins for this week
+    $stmt = $conn->prepare("SELECT day_number, spin_date, amount FROM user_spin_wheel_history WHERE user_id = ? AND week_start_date = ? ORDER BY day_number");
     $stmt->execute([$userId, $weekStart]);
-    $scratches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $spins = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
-    $scratchedDays = [];
+    $spunDays = [];
     $totalAmount = 0;
-    foreach ($scratches as $scratch) {
-        $scratchedDays[] = (int)$scratch['day_number'];
-        $totalAmount += floatval($scratch['amount']);
+    foreach ($spins as $spin) {
+        $spunDays[] = (int)$spin['day_number'];
+        $totalAmount += floatval($spin['amount']);
     }
     
-    // Check if user missed any previous day (if current day > 1, check if previous day was scratched)
+    // Check if user missed any previous day
     $hasMissedDay = false;
-    $currentStreakDay = 1; // Default to day 1
+    $currentStreakDay = 1;
     
     if ($dayNumber > 1) {
-        // Check if all previous days were scratched consecutively
-        // Start from day 1 and check each day up to (current day - 1)
+        // Check if all previous days were spun consecutively
         for ($i = 1; $i < $dayNumber; $i++) {
-            if (!in_array($i, $scratchedDays)) {
+            if (!in_array($i, $spunDays)) {
                 $hasMissedDay = true;
                 break;
             }
@@ -78,34 +77,33 @@ function getWeeklyProgress($userId, $conn) {
         }
     } else {
         // It's day 1 (Monday)
-        if (in_array(1, $scratchedDays)) {
-            // Already scratched day 1, but it's still Monday, so can't scratch again today
-            $currentStreakDay = 1; // Will be day 2 tomorrow
+        if (in_array(1, $spunDays)) {
+            $currentStreakDay = 1; // Already spun, will be day 2 tomorrow
         } else {
-            $currentStreakDay = 1; // Can scratch day 1
+            $currentStreakDay = 1; // Can spin day 1
         }
     }
     
     return [
         'week_start_date' => $weekStart,
         'current_day' => $dayNumber,
-        'scratched_days' => $scratchedDays,
-        'total_scratched' => count($scratchedDays),
+        'spun_days' => $spunDays,
+        'total_spun' => count($spunDays),
         'total_amount' => $totalAmount,
-        'can_scratch_today' => !in_array($dayNumber, $scratchedDays),
+        'can_spin_today' => !in_array($dayNumber, $spunDays),
         'current_streak_day' => $currentStreakDay,
         'has_missed_day' => $hasMissedDay
     ];
 }
 
-function hasScratchedToday($userId, $conn) {
+function hasSpunToday($userId, $conn) {
     $today = date('Y-m-d');
-    $stmt = $conn->prepare("SELECT id FROM user_scratch_card_history WHERE user_id = ? AND scratch_date = ?");
+    $stmt = $conn->prepare("SELECT id FROM user_spin_wheel_history WHERE user_id = ? AND spin_date = ?");
     $stmt->execute([$userId, $today]);
     return $stmt->rowCount() > 0;
 }
 
-function getScratchCardAmount($userId, $conn) {
+function getSpinWheelAmount($userId, $conn) {
     // Get weekly progress to determine current streak day
     $weeklyProgress = getWeeklyProgress($userId, $conn);
     $currentStreakDay = $weeklyProgress['current_streak_day'];
@@ -143,30 +141,30 @@ try {
     // Get weekly progress
     $weeklyProgress = getWeeklyProgress($userId, $conn);
     
-    // Check if user has already scratched today
-    $canScratchToday = $weeklyProgress['can_scratch_today'];
+    // Check if user has already spun today
+    $canSpinToday = $weeklyProgress['can_spin_today'];
     
-    if ($canScratchToday) {
-        // Get scratch card amount based on progressive system
-        $amount = getScratchCardAmount($userId, $conn);
+    if ($canSpinToday) {
+        // Get spin wheel amount based on progressive system
+        $amount = getSpinWheelAmount($userId, $conn);
         $currentStreakDay = $weeklyProgress['current_streak_day'];
         
         echo json_encode([
             'success' => true,
             'amount' => $amount,
-            'can_scratch_today' => true,
+            'can_spin_today' => true,
             'weekly_progress' => $weeklyProgress,
             'current_streak_day' => $currentStreakDay,
-            'message' => 'Scratch card available'
+            'message' => 'Spin wheel available'
         ]);
     } else {
-        // User has already scratched today
+        // User has already spun today
         echo json_encode([
             'success' => true,
             'amount' => 0,
-            'can_scratch_today' => false,
+            'can_spin_today' => false,
             'weekly_progress' => $weeklyProgress,
-            'message' => 'You have already scratched a card today. Come back tomorrow!'
+            'message' => 'You have already spun the wheel today. Come back tomorrow!'
         ]);
     }
     
@@ -178,3 +176,4 @@ try {
     ]);
 }
 ?>
+

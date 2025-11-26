@@ -39,9 +39,9 @@ function getDayNumber($date = null) {
     return (int)$date->format('N'); // 1 (Monday) to 7 (Sunday)
 }
 
-function hasScratchedToday($userId, $conn) {
+function hasSpunToday($userId, $conn) {
     $today = date('Y-m-d');
-    $stmt = $conn->prepare("SELECT id FROM user_scratch_card_history WHERE user_id = ? AND scratch_date = ?");
+    $stmt = $conn->prepare("SELECT id FROM user_spin_wheel_history WHERE user_id = ? AND spin_date = ?");
     $stmt->execute([$userId, $today]);
     return $stmt->rowCount() > 0;
 }
@@ -67,18 +67,18 @@ function updateWallet($userId, $amount, $conn) {
         $stmt = $conn->prepare("UPDATE users SET wallet_balance = ? WHERE id = ?");
         $stmt->execute([$newBalance, $userId]);
         
-        // Record in scratch card history with weekly tracking (standalone, no contest)
+        // Record in spin wheel history with weekly tracking
         $today = date('Y-m-d');
         $weekStart = getWeekStartDate($today);
         $dayNumber = getDayNumber($today);
         
-        // Insert into scratch card history (standalone, no contest_id or contest_type)
-        $stmt = $conn->prepare("INSERT INTO user_scratch_card_history (user_id, amount, scratch_date, week_start_date, day_number) VALUES (?, ?, ?, ?, ?)");
+        // Insert into spin wheel history
+        $stmt = $conn->prepare("INSERT INTO user_spin_wheel_history (user_id, amount, spin_date, week_start_date, day_number) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([$userId, $amount, $today, $weekStart, $dayNumber]);
         
-        // Insert into scratch card transactions table for logged in users (MAIN TABLE FOR WINNINGS)
-        $stmt = $conn->prepare("INSERT INTO scratch_card_transactions (user_id, amount, day_number, week_start_date, scratch_date, transaction_type, description) VALUES (?, ?, ?, ?, ?, 'credit', ?)");
-        $description = "Scratch Card Day $dayNumber Reward - ₹" . number_format($amount, 2);
+        // Insert into spin wheel transactions table for logged in users (MAIN TABLE FOR WINNINGS)
+        $stmt = $conn->prepare("INSERT INTO spin_wheel_transactions (user_id, amount, day_number, week_start_date, spin_date, transaction_type, description) VALUES (?, ?, ?, ?, ?, 'credit', ?)");
+        $description = "Spin Wheel Day $dayNumber Reward - ₹" . number_format($amount, 2);
         $stmt->execute([$userId, $amount, $dayNumber, $weekStart, $today, $description]);
         
         // Commit transaction
@@ -103,16 +103,16 @@ function getWeeklyProgress($userId, $conn) {
     $weekStart = getWeekStartDate();
     $dayNumber = getDayNumber();
     
-    // Get all scratches for this week
-    $stmt = $conn->prepare("SELECT day_number, scratch_date, amount FROM user_scratch_card_history WHERE user_id = ? AND week_start_date = ? ORDER BY day_number");
+    // Get all spins for this week
+    $stmt = $conn->prepare("SELECT day_number, spin_date, amount FROM user_spin_wheel_history WHERE user_id = ? AND week_start_date = ? ORDER BY day_number");
     $stmt->execute([$userId, $weekStart]);
-    $scratches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $spins = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
-    $scratchedDays = [];
+    $spunDays = [];
     $totalAmount = 0;
-    foreach ($scratches as $scratch) {
-        $scratchedDays[] = (int)$scratch['day_number'];
-        $totalAmount += floatval($scratch['amount']);
+    foreach ($spins as $spin) {
+        $spunDays[] = (int)$spin['day_number'];
+        $totalAmount += floatval($spin['amount']);
     }
     
     // Check if user missed any previous day
@@ -120,9 +120,9 @@ function getWeeklyProgress($userId, $conn) {
     $currentStreakDay = 1;
     
     if ($dayNumber > 1) {
-        // Check if all previous days were scratched consecutively
+        // Check if all previous days were spun consecutively
         for ($i = 1; $i < $dayNumber; $i++) {
-            if (!in_array($i, $scratchedDays)) {
+            if (!in_array($i, $spunDays)) {
                 $hasMissedDay = true;
                 break;
             }
@@ -137,18 +137,18 @@ function getWeeklyProgress($userId, $conn) {
         }
     } else {
         // It's day 1 (Monday)
-        if (in_array(1, $scratchedDays)) {
-            $currentStreakDay = 1; // Already scratched, will be day 2 tomorrow
+        if (in_array(1, $spunDays)) {
+            $currentStreakDay = 1; // Already spun, will be day 2 tomorrow
         } else {
-            $currentStreakDay = 1; // Can scratch day 1
+            $currentStreakDay = 1; // Can spin day 1
         }
     }
     
     return [
         'week_start_date' => $weekStart,
         'current_day' => $dayNumber,
-        'scratched_days' => $scratchedDays,
-        'total_scratched' => count($scratchedDays),
+        'spun_days' => $spunDays,
+        'total_spun' => count($spunDays),
         'total_amount' => $totalAmount,
         'current_streak_day' => $currentStreakDay,
         'has_missed_day' => $hasMissedDay
@@ -187,11 +187,11 @@ try {
         exit();
     }
     
-    // Check if user has already scratched today
-    if (hasScratchedToday($userId, $conn)) {
+    // Check if user has already spun today
+    if (hasSpunToday($userId, $conn)) {
         echo json_encode([
             'success' => false,
-            'message' => 'You have already scratched a card today. Come back tomorrow!'
+            'message' => 'You have already spun the wheel today. Come back tomorrow!'
         ]);
         exit();
     }
@@ -218,3 +218,4 @@ try {
     ]);
 }
 ?>
+
